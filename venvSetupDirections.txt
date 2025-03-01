@@ -1,0 +1,21 @@
+How to set up a venv
+
+1) create your project in vscode
+2) open your terminal and create a virtual environment
+    i) type:
+         python -m venv myvenv
+    ii) run the virtual environment by typing:
+        ./myvenv/Scripts/activate
+    iii) let me know if you have any error popping up and I'll walk you through how to fix it. If it does fail it's probably because of windows defender
+3) install OpenCV with:
+    pip install opencv-python
+4) check that OpenCV was installed by opening a python file and typing:
+    import cv2
+5) install YOLO by typing: pip install ultralytics
+    i) ensure it was installed correctly by opening a new python file and typing:
+        import ultralytics
+        ultralytics.checks()
+    ii) and then run the program
+6) You should be done 
+
+Use the ./myvenv/Scripts/activate to enter the venv before using any YOLO scripts
