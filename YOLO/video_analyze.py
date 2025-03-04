@@ -1,10 +1,9 @@
-import numpy as np
 import cv2
 from ultralytics import YOLO
 import random
 
 # opening dataset in read mode and creating a list of objects in the dataset
-my_f = open('datasets/coco.txt', 'r')
+my_f = open('YOLO/datasets/coco.txt', 'r')
 data = my_f.read()
 class_list = data.split('\n')
 my_f.close()
@@ -22,11 +21,12 @@ for i in range(len(class_list)):
 # load YOLO
 model = YOLO('weights/yolov8n.pt', 'v8')
 
-frame_width = 640
-frame_height = 480
+frame_width = 600
+frame_height = 440
 
-capture =  cv2.VideoCapture(0)
-#capture = cv2.VideoCapture('inference/videos/[insert video here].mp4')
+# Open the video file
+#capture =  cv2.VideoCapture(0) # for webcam
+capture = cv2.VideoCapture('YOLO/inference/videos/Devasated_Joey.mp4') # for video file
 
 if not capture.isOpened():
     print('Error opening video stream or file')
@@ -39,13 +39,13 @@ while True:
         break
     
     # Resize frame
-    # frame = cv2.resize(frame, (frame_width, frame_height))\
+    frame = cv2.resize(frame, (frame_width, frame_height))
 
     # write the frame
-    cv2.imwrite('inference/images/frame.png', frame)
+    cv2.imwrite('YOLO/inference/images/frame.png', frame)
 
-    # Perform inference
-    detect_params = model.predict(source='inference/images/frame.png', conf=0.45, save=False)
+    # Perform inference (DO NOT set save to True; it will save every frame as an image in the inference folder)
+    detect_params = model.predict(source='YOLO/inference/images/frame.png', conf=0.45, project='YOLO/inference/predictions', save=False)
 
     # convert tensor array to numpy
     #print(detect_params[0].numpy())
@@ -54,23 +54,24 @@ while True:
     if len(detect_params) != 0:
 
         # loop through the detected objects
-        for param in detect_params:
-            print('Printing param[0]')
-            param = param.orig_img[0]
-            print(param[0])
-            print('Printed param[0]')
-            exit()
+        for param in detect_params.boxes.xyxy.tolist():
+            # the target object of the current frame
+            obj_num = 0
 
-            # draw a box around detected objects and label them
-            cv2.rectangle(frame, (int(param[0]), int(param[1])), (int(param[2]), int(param[3])), detection_colors[int(param[5])], 3)
+            # draw a BBox around detected objects
+            cv2.rectangle(frame, (int(param[0]), int(param[1])), (int(param[2]), int(param[3])), detection_colors[int(detect_params.boxes.cls[obj_num])], 3)
+            
+            # label the detected objects
             font = cv2.FONT_HERSHEY_COMPLEX
-            cv2.putText(frame, class_list[int(param[5])]+" "+str(round(param[4], 3)) + "%", (int(param[0]), int(param[1])-10), font, 1, (255, 255, 255),2)
+            cv2.putText(frame, class_list[int(detect_params.boxes.cls[obj_num])] + " " + str(round(detect_params.boxes.conf[obj_num], 3)) + "%", (int(param[0]), int(param[1])-10), font, 1, (255, 255, 255),2)
+            obj_num += 1
 
     # Display the resulting frame
     cv2.imshow('Object Detection', frame)
 
     # Press Q on keyboard to exit
     if cv2.waitKey(1) == ord('q'):
+        print('Escape key pressed; Exiting ...')
         break
 
 # When everything done, release the video capture object
