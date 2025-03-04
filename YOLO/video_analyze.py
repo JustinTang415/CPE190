@@ -48,15 +48,14 @@ while True:
     detect_params = model.predict(source='YOLO/inference/images/frame.png', conf=0.45, project='YOLO/inference/predictions', save=False)
 
     # convert tensor array to numpy
-    #print(detect_params[0].numpy())
     detect_params = detect_params[0].numpy()
 
     if len(detect_params) != 0:
+        # the target object of the current frame
+        obj_num = 0
 
         # loop through the detected objects
         for param in detect_params.boxes.xyxy.tolist():
-            # the target object of the current frame
-            obj_num = 0
 
             # draw a BBox around detected objects
             cv2.rectangle(frame, (int(param[0]), int(param[1])), (int(param[2]), int(param[3])), detection_colors[int(detect_params.boxes.cls[obj_num])], 3)
