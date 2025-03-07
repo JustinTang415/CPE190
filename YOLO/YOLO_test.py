@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 # load a pretrained YOLOv8 model
-model = YOLO('yolo11n.pt')
+model = YOLO('YOLO/weights/yolo11n.pt')
 
 # predict on an image
 detection_output = model.predict(source="YOLO/inference/images/img0.jpg", conf=0.25, project='YOLO/inference/predictions', save=True)

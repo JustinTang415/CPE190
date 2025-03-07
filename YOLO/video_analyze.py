@@ -19,7 +19,7 @@ for i in range(len(class_list)):
     detection_colors.append((b, g, r))
 
 # load YOLO
-model = YOLO('weights/yolov8n.pt', 'v8')
+model = YOLO('YOLO/weights/yolo11n.pt')
 
 frame_width = 600
 frame_height = 440
@@ -62,7 +62,7 @@ while True:
             
             # label the detected objects
             font = cv2.FONT_HERSHEY_COMPLEX
-            cv2.putText(frame, class_list[int(detect_params.boxes.cls[obj_num])] + " " + str(round(detect_params.boxes.conf[obj_num], 3)) + "%", (int(param[0]), int(param[1])-10), font, 1, (255, 255, 255),2)
+            cv2.putText(frame, class_list[int(detect_params.boxes.cls[obj_num])] + " " + str(round(detect_params.boxes.conf[obj_num], 3) * 100) + "%", (int(param[0]), int(param[1])-10), font, 1, (255, 255, 255),2)
             obj_num += 1
 
     # Display the resulting frame
