@@ -1,6 +1,14 @@
 import cv2
 from ultralytics import YOLO
+from PIL import Image
 import random
+
+def resetFrame():
+    width = 200
+    height = 150
+
+    img = Image.new('RGB', (width, height), color = 'white')
+    img.save('YOLO/inference/images/frame.png')
 
 # opening dataset in read mode and creating a list of objects in the dataset
 my_f = open('YOLO/datasets/coco.txt', 'r')
@@ -74,5 +82,6 @@ while True:
         break
 
 # When everything done, release the video capture object
+resetFrame()
 capture.release()
 cv2.destroyAllWindows()
