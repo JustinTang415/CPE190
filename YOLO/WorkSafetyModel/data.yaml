@@ -1,6 +1,6 @@
-train: ../train/images
-val: ../valid/images
-test: ../test/images
+train: YOLO/WorkSafetyModel/train/images
+val: YOLO/WorkSafetyModel/valid/images
+test: YOLO/WorkSafetyModel/test/images
 
 nc: 5
 names: ['helmet', 'no-helmet', 'no-vest', 'person', 'vest']
