@@ -10,7 +10,7 @@ try:
 
 except FileNotFoundError as err:
     print(Fore.RED + str(err))
-    print(Fore.YELLOW + 'You are in the wrong directory. Please change to the YOLO/WorkSafetyModel directory.' + + Style.RESET_ALL)
+    print(Fore.YELLOW + 'You are in the wrong directory. Please change to the YOLO/WorkSafetyModel directory.' + Style.RESET_ALL)
     quit()
 
 # display tensor array
