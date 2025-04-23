@@ -7,6 +7,8 @@ from ultralytics import YOLO
 from colorama import Fore, Style
 
 # Functions ----------------------------------------------
+
+# Checks present working directory 
 def check_dir():
     print('Checking present working directory...')
     if re.search('WorkSafetyModel$', os.getcwd()):
@@ -16,6 +18,7 @@ def check_dir():
         print(Fore.YELLOW + 'You are in the wrong directory. Please change to the YOLO/WorkSafetyModel directory.' + Style.RESET_ALL)
         quit()
 
+# Checks for required libraries
 def check_libraries():
     required_libraries = ['opencv-python', 'colorama', 'ultralytics']
     print('Checking for required libraries...')
@@ -25,15 +28,19 @@ def check_libraries():
         print(Fore.YELLOW + f'You are missing the following libraries: {missing_libraries} please install them' + Style.RESET_ALL)
         quit()
 
+# Checks for desired YOLOv8 model
 def check_model():
-    print('Checking for safety model...')
+    print('Checking for safety model(s)...')
     try:
         model = YOLO('runs/detect/train/weights/best.pt')
+        # model_lr = YOLO('LR_MODEL/runs/detect/train/weights/best.pt')
         print(Fore.GREEN + 'Safety model found.' + Style.RESET_ALL)
+        # print(Fore.GREEN + 'Long range model found.' + Style.RESET_ALL)
     except FileNotFoundError as err:
         print(Fore.RED + str(err))
         print(Fore.RED + 'Please let me know and I will attempt to fix on your personal machine. This is a major error.' + Style.RESET_ALL)
 
+# Checks for video analysis file
 def find_video():
     print('Checking for video analysis file...')
     fp = 'safety_video.py'
@@ -54,7 +61,7 @@ def initial_checks():
 # Checks prerequisites before running the safety_video.py script
 initial_checks()
 
-print('starting video analysis script with the Work Safety Model... Press \'Q\' at any time to stop analysis')
+print('starting video analysis script with the Work Safety Model... Press \'q\' at any time to stop analysis')
 fp = 'safety_video.py'
 #sp.call('python ' + fp, shell=True)
 os.system(f'python {fp}')

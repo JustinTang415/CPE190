@@ -5,6 +5,24 @@ from colorama import Fore, Style
 import random
 
 # Functions ----------------------------------------------
+
+# Get list of classes to use depending on which model is being used
+def get_classlist(fp):
+    try:
+        # opening dataset in read mode and creating a list of objects in the dataset
+        my_f = open(fp, 'r')
+        data = my_f.read()
+        class_list = data.split('\n')
+        my_f.close()
+
+    except FileNotFoundError as err:
+        print(Fore.RED + str(err))
+        print(Fore.YELLOW + 'You are in the wrong directory. Please change to the YOLO/WorkSafetyModel directory.' + Style.RESET_ALL)
+        quit()
+
+    return class_list
+
+# Resets the analyzed frame
 def resetFrame():
     width = 200
     height = 150
@@ -12,40 +30,38 @@ def resetFrame():
     img = Image.new('RGB', (width, height), color = 'white')
     img.save('inference/images/frame.png')
 
+# Gets ideal frame size depending on the size of monitor
 def get_frame_size(cap):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) * 0.5
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) * 0.5
     return int(width), int(height)
 
-# MAIN ---------------------------------------------------
-try:
-    # opening dataset in read mode and creating a list of objects in the dataset
-    my_f = open('datasets/safetyParameters.txt', 'r')
-    data = my_f.read()
-    class_list = data.split('\n')
-    my_f.close()
+# Generate random colors for each class
+def create_class_colors(classes):
+    colors = []
+    for i in range(len(classes)):
+        r = random.randint(0, 255)
+        g = random.randint(0, 255)
+        b = random.randint(0, 255)
+        colors.append((b, g, r))
+    return colors
 
-except FileNotFoundError as err:
-    print(Fore.RED + str(err))
-    print(Fore.YELLOW + 'You are in the wrong directory. Please change to the YOLO/WorkSafetyModel directory.' + Style.RESET_ALL)
-    quit()
+# MAIN ---------------------------------------------------
+class_list = get_classlist('datasets/safetyParameters.txt')
+# lr_class_list = get_classlist('LR_MODEL/datasets/safetyParameters.txt')
 
 # print(class_list)
 
-# Generate random colors for each class
-detection_colors = []
-for i in range(len(class_list)):
-    r = random.randint(0, 255)
-    g = random.randint(0, 255)
-    b = random.randint(0, 255)
-    detection_colors.append((b, g, r))
+reg_colors = create_class_colors(class_list)
+# lr_colors = create_class_colors(class_list)
 
 # load Safety Model
 model = YOLO('runs/detect/train/weights/best.pt')
+# lr_model = YOLO('LR_MODEL/runs/detect/train/weights/best.pt')
 
 # Open the video file
 #capture =  cv2.VideoCapture(0) # for webcam
-capture = cv2.VideoCapture('inference/videos/construction_Broll.mp4') # for video file
+capture = cv2.VideoCapture('inference/videos/TestFootage.mp4') # for video file
 
 if not capture.isOpened():
     print('Error opening video stream or file')
@@ -68,7 +84,14 @@ while True:
     cv2.imwrite('inference/images/frame.png', frame)
 
     # Perform inference (DO NOT set save to True; it will save every frame as an image in the inference folder)
-    detect_params = model.predict(source='inference/images/frame.png', conf=0.45, project='inference/predictions', save=False, verbose=False)
+    if True:#no_detection_streak <= 15:
+        detect_params = model.predict(source='inference/images/frame.png', conf=0.45, project='inference/predictions', save=False, verbose=False)
+        detection_colors = reg_colors
+    else:
+        # Use long range detection
+        # detect_params = lr_model.predict(source='inference/images/frame.png', conf=0.45, project='inference/predictions', save=False, verbose=False)
+        # detection_colors = lr_colors
+        pass
 
     # convert tensor array to numpy
     detect_params = detect_params[0].numpy()
@@ -102,8 +125,7 @@ while True:
     else:
         no_detection_streak = 0
     
-    # If the number of frames without detection exceeds a certain threshold, send an alert
-    # change the no_detection_streak upper bound as needed
+    # If the number of frames without detection exceeds a certain threshold, send an alert (change the no_detection_streak upper bound as needed)
     if no_detection_streak >= 30 and no_hat_person_detected > 0:
         no_hat_person_detected = 0
         print(Fore.RED + 'ALERT: No hardhat detected on person!' + Style.RESET_ALL)
