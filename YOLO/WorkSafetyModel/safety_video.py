@@ -48,7 +48,7 @@ def create_class_colors(classes):
 
 # MAIN ---------------------------------------------------
 class_list = get_classlist('datasets/safetyParameters.txt')
-# lr_class_list = get_classlist('LR_MODEL/datasets/safetyParameters.txt')
+# lr_class_list = get_classlist('datasets/longRange.txt')
 
 # print(class_list)
 
@@ -61,7 +61,7 @@ model = YOLO('runs/detect/train/weights/best.pt')
 
 # Open the video file
 #capture =  cv2.VideoCapture(0) # for webcam
-capture = cv2.VideoCapture('inference/videos/TestFootage.mp4') # for video file
+capture = cv2.VideoCapture('inference/videos/construction_Broll.mp4') # for video file
 
 if not capture.isOpened():
     print('Error opening video stream or file')
@@ -119,7 +119,7 @@ while True:
     hardhats = detect_params.boxes.cls.tolist().count(float(0))
 
     # Check if people are wearing hardhats, and keep track of how many frames in a row this has been true
-    if hardhats != people:
+    if hardhats < people:
         no_hat_person_detected = abs(people - hardhats)
         no_detection_streak += 1
     else:
