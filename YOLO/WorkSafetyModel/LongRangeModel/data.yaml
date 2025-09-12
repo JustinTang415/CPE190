@@ -1,6 +1,6 @@
-train: C:\Users\ayush\KAREN\CPE190\YOLO\WorkSafetyModel\LongRangeModel\train\images
-val: C:\Users\ayush\KAREN\CPE190\YOLO\WorkSafetyModel\LongRangeModel\valid\images
-test: C:\Users\ayush\KAREN\CPE190\YOLO\WorkSafetyModel\LongRangeModel\test\images
+train: ..\train\images
+val: ..\valid\images
+test: ..\test\images
 
 nc: 25
 names: ['Excavator', 'Gloves', 'Hardhat', 'Ladder', 'Mask', 'NO-Hardhat', 'NO-Mask', 'NO-Safety Vest', 'Person', 'SUV', 'Safety Cone', 'Safety Vest', 'bus', 'dump truck', 'fire hydrant', 'machinery', 'mini-van', 'sedan', 'semi', 'trailer', 'truck', 'truck and trailer', 'van', 'vehicle', 'wheel loader']

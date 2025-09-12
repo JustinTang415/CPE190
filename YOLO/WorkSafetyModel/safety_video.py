@@ -32,8 +32,8 @@ def resetFrame():
 
 # Gets ideal frame size depending on the size of monitor
 def get_frame_size(cap):
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) * 0.5
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) * 0.5
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) #* 0.5
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) #* 0.5
     return int(width), int(height)
 
 # Generate random colors for each class
@@ -56,12 +56,12 @@ reg_colors = create_class_colors(class_list)
 # lr_colors = create_class_colors(class_list)
 
 # load Safety Model
-model = YOLO('runs/detect/train/weights/best.pt')
+model = YOLO('runs/detect/train/weights/best.pt') # For long range, train3; for regular, train
 # lr_model = YOLO('LR_MODEL/runs/detect/train/weights/best.pt')
 
 # Open the video file
-#capture =  cv2.VideoCapture(0) # for webcam
-capture = cv2.VideoCapture('inference/videos/construction_Broll.mp4') # for video file
+capture =  cv2.VideoCapture(0) # for webcam
+#capture = cv2.VideoCapture('inference/videos/TestFootage.mp4') # for video file
 
 if not capture.isOpened():
     print('Error opening video stream or file')
@@ -119,11 +119,11 @@ while True:
     hardhats = detect_params.boxes.cls.tolist().count(float(0))
 
     # Check if people are wearing hardhats, and keep track of how many frames in a row this has been true
-    if hardhats < people:
-        no_hat_person_detected = abs(people - hardhats)
-        no_detection_streak += 1
-    else:
-        no_detection_streak = 0
+    #if hardhats < people:
+     #   no_hat_person_detected = abs(people - hardhats)
+      #  no_detection_streak += 1
+    #else:
+     #   no_detection_streak = 0
     
     # If the number of frames without detection exceeds a certain threshold, send an alert (change the no_detection_streak upper bound as needed)
     if no_detection_streak >= 30 and no_hat_person_detected > 0:
