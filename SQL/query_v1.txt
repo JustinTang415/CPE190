@@ -3,10 +3,10 @@
 # query.py — FINAL VERSION
 #
 # What this script does:
-#   ✅ Creates the violations database table automatically (if not already there)
-#   ✅ Always safe — missing GPS/time NEVER causes an error
-#   ✅ Allows adding violations from Jetson Nano
-#   ✅ Allows listing all logged violations
+#   Creates the violations database table automatically (if not already there)
+#   Always safe — missing GPS/time NEVER causes an error
+#   Allows adding violations from Jetson Nano
+#   Allows listing all logged violations
 #
 # This file replaces ALL other versions. This is the simplest + safest.
 # =============================================================================
@@ -189,7 +189,7 @@ def main():
     try:
         if args.cmd == "add":
             add_violation(con, args.type, args.status, args.lat, args.lon, args.time)
-            print("✅ Violation added.")
+            print("Violation added.")
             return
 
         if args.cmd == "list":
