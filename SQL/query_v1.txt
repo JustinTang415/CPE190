@@ -1,523 +1,145 @@
 #!/usr/bin/env python3
-# query.py — one-file DB initializer + query tool for flight telemetry
+# query.py — SIMPLE VIOLATION TABLE QUERY TOOL (with GPS coordinates)
 #
-# WHAT THIS FILE DOES:
-#   1) Ensures the SQLite schema exists (tables + indices) using the schema you provided:
-#        - imu(ts, ax, ay, az)
-#        - gps(ts, vert_acc, alt)      <-- NOTE: per your schema there is NO lat/lon here
-#        - events(ts, level, msg)
-#      …and indices on ts for each table.
-#   2) Provides a CLI to query:
-#        - IMU: latest/window/stats
-#        - GPS: latest/window (with vert_acc + alt)
-#        - EVENTS: latest/window (with optional level filter)
-#        - SQL: read-only SELECT for ad-hoc queries
+# One table: violations
+#   V_ID       INTEGER PRIMARY KEY AUTOINCREMENT
+#   lat        REAL DEFAULT 0        (GPS latitude; if missing => 0)
+#   lon        REAL DEFAULT 0        (GPS longitude; if missing => 0)
+#   type       TEXT NOT NULL         (e.g., NO_HARD_HAT or NO_VEST)
+#   time_data  TEXT DEFAULT '0'      (string timestamp or any tag; if missing => "0")
 #
-# HEAVY COMMENTS: Every module import, IF statement, and query is explained inline.
+# No parsing, no time windows, no photos. Just add/list/show.
+# Every import, IF, and query is commented.
 
-# ------------------------- MODULE IMPORTS (why each is here) -------------------------
-import argparse  # Build a structured command-line interface with subcommands (imu/gps/events/sql).
-import csv       # Allow exporting rows to CSV when user passes --export csv.
-import datetime as dt  # Parse/compute absolute/relative time windows (since/between).
-import json      # Allow exporting rows to JSON when user passes --export json.
-import pathlib   # Safer, cross-platform path handling (e.g., flight.db file).
-import sqlite3   # SQLite driver to connect, run SQL, fetch rows.
-import sys       # Exit early with friendly messages (sys.exit) if schema/db are missing.
-from typing import Iterable, List, Optional, Tuple  # For clearer function signatures (documentation only).
+import argparse      # tiny CLI (e.g.,: python3 query.py add NO_HARD_HAT --lat 38.56 --lon -121.47)
+import sqlite3       # SQLite engine (connect + SELECT/INSERT)
+import pathlib       # robust filesystem paths (DB path)
+import sys           # clean exits on error messages (not heavily used here)
 
-# ------------------------- CONFIG -------------------------
-DB_PATH = pathlib.Path("flight.db")  # Default DB path. Can be overridden with --db.
+# Where the database file lives (change if you want)
+DB_PATH = pathlib.Path("/home/jetson/violations.db")
 
-# ------------------------- INTEGRATED SCHEMA (your schema.sql) -------------------------
-# NOTE: This is exactly your schema, embedded so you don't need a separate schema.sql file.
-#       GPS here has (ts, vert_acc, alt) only — no lat/lon.
+# Minimal schema: one table, with defaults to 0 for lat/lon/time_data.
 SCHEMA_SQL = """
--- IMU: 3-axis accelerometer as an example.
-CREATE TABLE IF NOT EXISTS imu (
-  ts INTEGER NOT NULL,          -- epoch seconds (INTEGER); use ms if needed
-  ax REAL NOT NULL,
-  ay REAL NOT NULL,
-  az REAL NOT NULL
+CREATE TABLE IF NOT EXISTS violations (
+    V_ID      INTEGER PRIMARY KEY AUTOINCREMENT,
+    lat       REAL DEFAULT 0,      -- GPS latitude (missing => 0)
+    lon       REAL DEFAULT 0,      -- GPS longitude (missing => 0)
+    type      TEXT NOT NULL,       -- NO_HARD_HAT / NO_VEST
+    time_data TEXT DEFAULT '0'     -- optional; missing => "0"
 );
-
--- GPS: basic fields per your file (NO lat/lon here).
--- If you later want lat/lon again, add columns and re-run init.
-CREATE TABLE IF NOT EXISTS gps (
-  ts INTEGER NOT NULL,
-  vert_acc REAL NOT NULL,
-  alt REAL
-);
-
--- Events: human-readable log entries (errors, warnings, milestones).
-CREATE TABLE IF NOT EXISTS events (
-  ts INTEGER NOT NULL,
-  level TEXT NOT NULL,          -- INFO | WARN | ERROR
-  msg TEXT NOT NULL
-);
-
--- Indices for time-ordered queries (each index speeds reads but costs write overhead).
-CREATE INDEX IF NOT EXISTS idx_imu_ts     ON imu(ts);
-CREATE INDEX IF NOT EXISTS idx_gps_ts     ON gps(ts);
-CREATE INDEX IF NOT EXISTS idx_events_ts  ON events(ts);
 """
 
-# ------------------------- DB UTILITIES -------------------------
-def connect(db: pathlib.Path) -> sqlite3.Connection:
-    """
-    Open a connection to the SQLite DB with dict-like rows for easy printing/export.
-    """
-    # IF the DB file is missing, we still connect (SQLite will create the file).
-    # We rely on ensure_schema() to create the tables on first run.
-    con = sqlite3.connect(db)
-    con.row_factory = sqlite3.Row  # Return rows as dict-like objects for readability.
+def connect(db_path: pathlib.Path) -> sqlite3.Connection:
+    """Open or create the SQLite DB and return a connection."""
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row  # rows can be accessed like dicts: row["lat"]
     return con
 
 def ensure_schema(con: sqlite3.Connection):
-    """
-    Create tables/indices if they don't exist (idempotent).
-    """
-    # Execute the entire schema script at once.
+    """Create the violations table if it doesn't exist."""
     con.executescript(SCHEMA_SQL)
     con.commit()
 
-def ensure_expected_tables(con: sqlite3.Connection):
-    """
-    Soft guard to confirm that the expected tables exist with this schema.
-    Helps catch accidental mismatches.
-    """
-    need = {"imu", "gps", "events"}
-    have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    missing = sorted(need - have)
-    # IF any table is missing, exit with a clear error to guide the user.
-    if missing:
-        sys.exit(f"[error] missing tables after init: {', '.join(missing)}")
-
-# ------------------------- TIME PARSERS -------------------------
-def parse_since(s: Optional[str]) -> Optional[int]:
-    """
-    Convert relative window like '30s','5m','2h','1d' to seconds.
-    Returns None if not provided (meaning 'no relative filter').
-    """
-    # IF not provided, there is no relative filter to apply.
-    if not s:
-        return None
-    s = s.strip().lower()
-    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    # Try each supported suffix.
-    for suf, mult in units.items():
-        # IF the string ends with a known suffix, strip it and multiply.
-        if s.endswith(suf):
-            return int(float(s[:-1]) * mult)
-    # IF it's just a plain number, treat it as seconds.
-    return int(s)
-
-def parse_between(s: Optional[str]) -> Optional[Tuple[int, int]]:
-    """
-    Parse absolute time window 'start,end' into epoch seconds.
-    Accepts YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS.
-    """
-    # IF not provided, we skip absolute filtering.
-    if not s:
-        return None
-    start_s, end_s = [x.strip() for x in s.split(",", 1)]
-    fmts = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d")
-
-    def to_epoch(x: str) -> int:
-        for f in fmts:
-            try:
-                return int(dt.datetime.strptime(x, f).timestamp())
-            except ValueError:
-                # IF this format fails, try the next.
-                pass
-        # IF none match, bail with a helpful message.
-        raise SystemExit(f"[error] bad datetime: {x}  (use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
-
-    return to_epoch(start_s), to_epoch(end_s)
-
-# ------------------------- EXPORT HELPER -------------------------
-def export_rows(rows: Iterable[sqlite3.Row], kind: str, out: Optional[str]):
-    """
-    Print rows as a table, or export to CSV/JSON.
-    Centralizes output so every command can reuse it.
-    """
+def print_rows(rows):
+    """Pretty-print a list of sqlite3.Row as a simple table."""
     data = [dict(r) for r in rows]
-
-    # IF JSON requested, write file or print to stdout.
-    if kind == "json":
-        payload = json.dumps(data, indent=2)
-        if out:
-            pathlib.Path(out).write_text(payload, encoding="utf-8")
-        else:
-            print(payload)
-        return
-
-    # IF CSV requested, write headers and rows.
-    if kind == "csv":
-        if not data:
-            # IF empty, create an empty file or print nothing.
-            if out:
-                pathlib.Path(out).write_text("", encoding="utf-8")
-            return
-        headers = list(data[0].keys())
-        if out:
-            with open(out, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=headers)
-                w.writeheader()
-                w.writerows(data)
-        else:
-            w = csv.DictWriter(sys.stdout, fieldnames=headers)
-            w.writeheader()
-            w.writerows(data)
-        return
-
-    # Default: pretty console table (simple monospace formatting).
     if not data:
         print("(no rows)")
         return
-    widths = {k: max(len(k), max(len(str(r.get(k, ""))) for r in data)) for k in data[0].keys()}
-    sep = " | "
-    header = sep.join(k.ljust(widths[k]) for k in widths)
-    bar = "-+-".join("-" * widths[k] for k in widths)
+    widths = {k: max(len(k), max(len(str(v)) for v in (row.get(k, "") for row in data))) for k in data[0].keys()}
+    header = " | ".join(k.ljust(widths[k]) for k in data[0].keys())
     print(header)
-    print(bar)
-    for r in data:
-        print(sep.join(str(r.get(k, "")).ljust(widths[k]) for k in widths))
+    print("-" * len(header))
+    for row in data:
+        print(" | ".join(str(row.get(k, "")).ljust(widths[k]) for k in data[0].keys()))
 
-# ------------------------- IMU QUERIES -------------------------
-def imu_latest(con, limit: int, offset: int):
-    """
-    Fetch most recent IMU rows ordered by ts descending.
-    """
-    # SQL query: grab N rows from imu, newest first (ORDER BY ts DESC), with paging.
+# ----------- Simple operations: list, add, show -----------
+
+def list_all(con):
+    """Return all violations (newest first)."""
     return con.execute(
-        "SELECT ts, ax, ay, az FROM imu ORDER BY ts DESC LIMIT ? OFFSET ?",
-        (limit, offset)
+        "SELECT V_ID, lat, lon, type, time_data FROM violations ORDER BY V_ID DESC"
     ).fetchall()
 
-def imu_window(con, since_s: Optional[int], between: Optional[Tuple[int, int]], limit: int, offset: int):
+def add_violation(con, vtype: str, lat, lon, time_data):
     """
-    Fetch IMU rows filtered by a relative window (--since) and/or absolute window (--between).
+    Insert a violation row.
+    If lat/lon/time_data are missing (None), they become 0 (your requirement).
     """
-    where, params = [], []
+    # Coerce None/empty to 0 (keep it dead simple; no parsing)
+    if lat is None:
+        lat = 0
+    if lon is None:
+        lon = 0
+    if not time_data:
+        time_data = "0"
 
-    # IF a relative window is requested, filter for rows newer than NOW - since_s.
-    if since_s:
-        where.append("ts >= strftime('%s','now') - ?")
-        params.append(since_s)
+    con.execute(
+        "INSERT INTO violations(lat, lon, type, time_data) VALUES (?, ?, ?, ?)",
+        (lat, lon, vtype, time_data)
+    )
+    con.commit()
+    return [{"status": "OK", "inserted_type": vtype, "lat": lat, "lon": lon, "time_data": time_data}]
 
-    # IF an absolute window is requested, filter BETWEEN start and end (inclusive).
-    if between:
-        where.append("ts BETWEEN ? AND ?")
-        params.extend([between[0], between[1]])
-
-    # Build base query.
-    sql = "SELECT ts, ax, ay, az FROM imu"
-    # IF any filters exist, inject WHERE clause joined by AND.
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    # Always sort newest first; apply paging.
-    sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-
-    return con.execute(sql, params).fetchall()
-
-def imu_stats(con, since_s: Optional[int], between: Optional[Tuple[int, int]]):
-    """
-    IMU aggregate stats (count, ts range, avg/min/max for each axis) over an optional time window.
-    """
-    where, params = [], []
-
-    # IF relative window requested, apply it.
-    if since_s:
-        where.append("ts >= strftime('%s','now') - ?")
-        params.append(since_s)
-
-    # IF absolute window requested, apply BETWEEN.
-    if between:
-        where.append("ts BETWEEN ? AND ?")
-        params.extend([between[0], between[1]])
-
-    # Aggregate query: returns summary metrics in a single row.
-    sql = """
-    SELECT
-      COUNT(*)                AS n,
-      MIN(ts)                 AS ts_min,
-      MAX(ts)                 AS ts_max,
-      AVG(ax)                 AS ax_avg, MIN(ax) AS ax_min, MAX(ax) AS ax_max,
-      AVG(ay)                 AS ay_avg, MIN(ay) AS ay_min, MAX(ay) AS ay_max,
-      AVG(az)                 AS az_avg, MIN(az) AS az_min, MAX(az) AS az_max
-    FROM imu
-    """
-    # IF filters present, add WHERE.
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-
-    return con.execute(sql, params).fetchall()
-
-# ------------------------- GPS QUERIES (per your schema: ts, vert_acc, alt) -------------------------
-def gps_latest(con, limit: int, offset: int):
-    """
-    Fetch most recent GPS rows (as defined by your schema: ts, vert_acc, alt).
-    """
-    # SQL query: grab N newest rows from gps with paging.
+def show_one(con, vid: int):
+    """Return one violation by ID."""
     return con.execute(
-        "SELECT ts, vert_acc, alt FROM gps ORDER BY ts DESC LIMIT ? OFFSET ?",
-        (limit, offset)
+        "SELECT V_ID, lat, lon, type, time_data FROM violations WHERE V_ID = ?",
+        (vid,)
     ).fetchall()
 
-def gps_window(con, since_s: Optional[int], between: Optional[Tuple[int, int]], limit: int, offset: int):
-    """
-    Fetch GPS rows within relative and/or absolute time windows.
-    """
-    where, params = [], []
-
-    # IF relative window requested, add NOW - since_s.
-    if since_s:
-        where.append("ts >= strftime('%s','now') - ?")
-        params.append(since_s)
-
-    # IF absolute window requested, add BETWEEN range.
-    if between:
-        where.append("ts BETWEEN ? AND ?")
-        params.extend([between[0], between[1]])
-
-    sql = "SELECT ts, vert_acc, alt FROM gps"
-    # IF filters exist, append WHERE.
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-
-    return con.execute(sql, params).fetchall()
-
-# ------------------------- EVENT QUERIES -------------------------
-def events_latest(con, level: Optional[str], limit: int, offset: int):
-    """
-    Fetch most recent events, optionally filtered by level (INFO/WARN/ERROR).
-    """
-    where, params = [], []
-
-    # IF level filter present, apply it first.
-    if level:
-        where.append("level = ?")
-        params.append(level)
-
-    sql = "SELECT ts, level, msg FROM events"
-    # IF a predicate exists, add WHERE.
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-
-    return con.execute(sql, params).fetchall()
-
-def events_window(con, level: Optional[str], since_s: Optional[int], between: Optional[Tuple[int, int]], limit: int, offset: int):
-    """
-    Fetch events within a time window, optionally filtered by level.
-    """
-    where, params = [], []
-
-    # IF level is specified, constrain first.
-    if level:
-        where.append("level = ?")
-        params.append(level)
-
-    # IF relative window specified, constrain by NOW - since_s.
-    if since_s:
-        where.append("ts >= strftime('%s','now') - ?")
-        params.append(since_s)
-
-    # IF absolute window specified, constrain via BETWEEN.
-    if between:
-        where.append("ts BETWEEN ? AND ?")
-        params.extend([between[0], between[1]])
-
-    sql = "SELECT ts, level, msg FROM events"
-    # IF we have any filters, add WHERE clause.
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-
-    return con.execute(sql, params).fetchall()
-
-# ------------------------- RAW SQL (read-only) -------------------------
-def raw_sql(con, stmt: str):
-    """
-    Run a read-only SELECT. We block any write/DDL to keep this tool safe.
-    """
-    s = stmt.strip().lower()
-    forbidden = ("insert ", "update ", "delete ", "replace ", "drop ", "alter ", "vacuum", "attach ", "pragma ")
-    # IF it looks like a write/DDL, reject with an error.
-    if any(s.startswith(x) for x in forbidden):
-        raise SystemExit("[error] only read-only SELECT is allowed here.")
-    return con.execute(stmt).fetchall()
-
-# ------------------------- CLI HELPERS -------------------------
-def add_common_args(p: argparse.ArgumentParser):
-    """
-    Args common across most subcommands: database path, limit/offset, and export mode.
-    """
-    p.add_argument("--db", type=pathlib.Path, default=DB_PATH, help=f"Path to DB (default: {DB_PATH})")
-    p.add_argument("--limit", type=int, default=50, help="Rows to return (default 50)")
-    p.add_argument("--offset", type=int, default=0, help="Offset for paging (default 0)")
-    p.add_argument("--export", choices=["table", "csv", "json"], default="table", help="Output format")
-    p.add_argument("--out", type=str, default=None, help="File path to write (for csv/json)")
-
-def add_window_args(p: argparse.ArgumentParser):
-    """
-    Args for time-window filtering, shared by all 'window' subcommands.
-    """
-    p.add_argument("--since", type=str, default=None, help="Relative window (30s, 5m, 1h, 1d)")
-    p.add_argument("--between", type=str, default=None, help="Absolute window 'YYYY-MM-DD[,time],YYYY-MM-DD[,time]'")
-
-# ------------------------- MAIN: CLI ROUTING -------------------------
 def main():
-    """
-    Build the CLI and route to the correct handler.
-    Every IF statement here selects the right path based on user input.
-    """
-    ap = argparse.ArgumentParser(description="One-file DB init + query for imu/gps/events")
-    sub = ap.add_subparsers(dest="cmd", required=True)  # IF user omits a command, argparse will error (required=True).
+    # Build the tiny CLI
+    parser = argparse.ArgumentParser(description="Simple Jetson violation query tool (coords)")
+    sub = parser.add_subparsers(dest="cmd", required=True)
 
-    # IMU command group
-    imu = sub.add_parser("imu", help="IMU queries")
-    imu_sub = imu.add_subparsers(dest="op", required=True)  # IF no op chosen, argparse errors.
+    # list
+    p_list = sub.add_parser("list", help="List all violations (newest first)")
+    p_list.add_argument("--db", type=pathlib.Path, default=DB_PATH)
 
-    # imu latest
-    imu_latest_p = imu_sub.add_parser("latest", help="Latest IMU rows")
-    add_common_args(imu_latest_p)
+    # add
+    p_add = sub.add_parser("add", help="Add a new violation")
+    p_add.add_argument("type", type=str, help="Violation type (e.g., NO_HARD_HAT or NO_VEST)")
+    p_add.add_argument("--lat", type=float, default=None, help="Latitude (optional, default 0)")
+    p_add.add_argument("--lon", type=float, default=None, help="Longitude (optional, default 0)")
+    p_add.add_argument("--time", type=str, default=None, help="Time/Date string (optional, default '0')")
+    p_add.add_argument("--db", type=pathlib.Path, default=DB_PATH)
 
-    # imu window
-    imu_window_p = imu_sub.add_parser("window", help="IMU time window")
-    add_common_args(imu_window_p)
-    add_window_args(imu_window_p)
+    # show
+    p_show = sub.add_parser("show", help="Show one violation by V_ID")
+    p_show.add_argument("V_ID", type=int)
+    p_show.add_argument("--db", type=pathlib.Path, default=DB_PATH)
 
-    # imu stats
-    imu_stats_p = imu_sub.add_parser("stats", help="IMU summary stats")
-    imu_stats_p.add_argument("--db", type=pathlib.Path, default=DB_PATH)
-    add_window_args(imu_stats_p)
-    imu_stats_p.add_argument("--export", choices=["table", "csv", "json"], default="table")
-    imu_stats_p.add_argument("--out", type=str, default=None)
+    args = parser.parse_args()
 
-    # GPS command group (NOTE: schema has ts, vert_acc, alt)
-    gps = sub.add_parser("gps", help="GPS queries")
-    gps_sub = gps.add_subparsers(dest="op", required=True)
-
-    gps_latest_p = gps_sub.add_parser("latest", help="Latest GPS rows")
-    add_common_args(gps_latest_p)
-
-    gps_window_p = gps_sub.add_parser("window", help="GPS time window")
-    add_common_args(gps_window_p)
-    add_window_args(gps_window_p)
-
-    # EVENTS command group
-    ev = sub.add_parser("events", help="Event queries")
-    ev_sub = ev.add_subparsers(dest="op", required=True)
-
-    ev_latest_p = ev_sub.add_parser("latest", help="Latest events")
-    add_common_args(ev_latest_p)
-    ev_latest_p.add_argument("--level", choices=["INFO", "WARN", "ERROR"], default=None)
-
-    ev_window_p = ev_sub.add_parser("window", help="Events time window")
-    add_common_args(ev_window_p)
-    add_window_args(ev_window_p)
-    ev_window_p.add_argument("--level", choices=["INFO", "WARN", "ERROR"], default=None)
-
-    # RAW SQL (read-only)
-    sql_p = sub.add_parser("sql", help="Raw read-only SELECT")
-    sql_p.add_argument("stmt", type=str, help="SQL SELECT ...")
-    sql_p.add_argument("--db", type=pathlib.Path, default=DB_PATH)
-    sql_p.add_argument("--export", choices=["table", "csv", "json"], default="table")
-    sql_p.add_argument("--out", type=str, default=None)
-
-    args = ap.parse_args()
-
-    # OPEN DB and ensure schema exists on every run.
+    # Open DB and ensure schema exists
     con = connect(args.db)
-    ensure_schema(con)           # Create tables/indices if needed (no-op if already present).
-    ensure_expected_tables(con)  # Double-check we have imu/gps/events.
+    ensure_schema(con)
+
     try:
-        # ---------------------- ROUTE: which top-level command? ----------------------
-        # IF the user picked the IMU command group...
-        if args.cmd == "imu":
-            # IF op == latest, fetch most recent IMU rows.
-            if args.op == "latest":
-                rows = imu_latest(con, args.limit, args.offset)
+        # If user asked to list all
+        if args.cmd == "list":
+            rows = list_all(con)
+            print_rows(rows)
+            return
 
-            # ELSE IF op == window, parse time options and fetch a window.
-            elif args.op == "window":
-                rows = imu_window(
-                    con,
-                    parse_since(args.since),         # Convert e.g., "5m" to seconds.
-                    parse_between(args.between),     # Convert absolute ISO to epoch seconds.
-                    args.limit,
-                    args.offset
-                )
+        # If user wants to add a violation
+        if args.cmd == "add":
+            rows = add_violation(con, args.type, args.lat, args.lon, args.time)
+            print_rows(rows)
+            return
 
-            # ELSE IF op == stats, compute aggregates instead of raw rows.
-            elif args.op == "stats":
-                rows = imu_stats(
-                    con,
-                    parse_since(args.since),
-                    parse_between(args.between)
-                )
+        # If user wants to show a single violation by ID
+        if args.cmd == "show":
+            rows = show_one(con, args.V_ID)
+            print_rows(rows)
+            return
 
-            # Output rows in the requested format (table/csv/json).
-            export_rows(rows, getattr(args, "export", "table"), getattr(args, "out", None))
-            return  # IF we've handled IMU, we can return from main.
-
-        # IF the user picked the GPS command group...
-        if args.cmd == "gps":
-            # IF op == latest, fetch most recent GPS rows (ts, vert_acc, alt).
-            if args.op == "latest":
-                rows = gps_latest(con, args.limit, args.offset)
-
-            # ELSE IF op == window, apply time filters.
-            elif args.op == "window":
-                rows = gps_window(
-                    con,
-                    parse_since(args.since),
-                    parse_between(args.between),
-                    args.limit,
-                    args.offset
-                )
-
-            export_rows(rows, args.export, args.out)
-            return  # IF we've handled GPS, return.
-
-        # IF the user picked the EVENTS command group...
-        if args.cmd == "events":
-            # IF op == latest, with optional level filter.
-            if args.op == "latest":
-                rows = events_latest(con, args.level, args.limit, args.offset)
-
-            # ELSE IF op == window, with optional level + time filters.
-            elif args.op == "window":
-                rows = events_window(
-                    con,
-                    args.level,
-                    parse_since(args.since),
-                    parse_between(args.between),
-                    args.limit,
-                    args.offset
-                )
-
-            export_rows(rows, args.export, args.out)
-            return  # IF we've handled EVENTS, return.
-
-        # IF the user picked raw SQL (read-only)...
-        if args.cmd == "sql":
-            # NOTE: writes/DDL are blocked in raw_sql() for safety.
-            rows = raw_sql(con, args.stmt)
-            export_rows(rows, args.export, args.out)
-            return  # IF we've handled SQL, return.
-
+        # Fallback (argparse should prevent reaching here)
+        print("Use --help for commands.")
     finally:
-        # Always close the connection, even if something raised an error.
         con.close()
 
-# Standard entry point: IF the file is executed as a script, run main().
-# IF the file is imported as a module, main() won't auto-run.
 if __name__ == "__main__":
     main()
