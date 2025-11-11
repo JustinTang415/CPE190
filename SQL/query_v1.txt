@@ -1,143 +1,123 @@
 #!/usr/bin/env python3
-# query.py — SIMPLE VIOLATION TABLE QUERY TOOL (with GPS coordinates)
+# query.py — simplest violations DB tool (creates table if missing, then add/list/show)
 #
-# One table: violations
-#   V_ID       INTEGER PRIMARY KEY AUTOINCREMENT
-#   lat        REAL DEFAULT 0        (GPS latitude; if missing => 0)
-#   lon        REAL DEFAULT 0        (GPS longitude; if missing => 0)
-#   type       TEXT NOT NULL         (e.g., NO_HARD_HAT or NO_VEST)
-#   time_data  TEXT DEFAULT '0'      (string timestamp or any tag; if missing => "0")
+# Table: violations
+#   V_ID      INTEGER PRIMARY KEY AUTOINCREMENT
+#   lat       REAL DEFAULT 0         (GPS latitude; missing -> 0)
+#   lon       REAL DEFAULT 0         (GPS longitude; missing -> 0)
+#   type      TEXT NOT NULL          (e.g., NO_HARD_HAT or NO_VEST)
+#   time_data TEXT DEFAULT '0'       (timestamp/tag; missing -> "0")
 #
-# No parsing, no time windows, no photos. Just add/list/show.
-# Every import, IF, and query is commented.
+# No time parsing, no extra features. Just the basics.
 
-import argparse      # tiny CLI (e.g.,: python3 query.py add NO_HARD_HAT --lat 38.56 --lon -121.47)
-import sqlite3       # SQLite engine (connect + SELECT/INSERT)
-import pathlib       # robust filesystem paths (DB path)
-import sys           # clean exits on error messages (not heavily used here)
+import argparse          # tiny CLI: list / add / show
+import sqlite3           # SQLite engine
+import pathlib           # stable path to DB
 
-# Where the database file lives (change if you want)
-DB_PATH = pathlib.Path("/home/jetson/violations.db")
+DB_PATH = pathlib.Path("/home/jetson/violations.db")  # change if you store DB elsewhere
 
-# Minimal schema: one table, with defaults to 0 for lat/lon/time_data.
+# Create the table only if it doesn't exist yet (won't crash on subsequent runs).
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS violations (
     V_ID      INTEGER PRIMARY KEY AUTOINCREMENT,
-    lat       REAL DEFAULT 0,      -- GPS latitude (missing => 0)
-    lon       REAL DEFAULT 0,      -- GPS longitude (missing => 0)
-    type      TEXT NOT NULL,       -- NO_HARD_HAT / NO_VEST
-    time_data TEXT DEFAULT '0'     -- optional; missing => "0"
+    lat       REAL DEFAULT 0,
+    lon       REAL DEFAULT 0,
+    type      TEXT NOT NULL,
+    time_data TEXT DEFAULT '0'
 );
 """
 
 def connect(db_path: pathlib.Path) -> sqlite3.Connection:
-    """Open or create the SQLite DB and return a connection."""
+    """Open (or create) the SQLite database and return a connection."""
     con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row  # rows can be accessed like dicts: row["lat"]
+    con.row_factory = sqlite3.Row  # rows behave like dicts: row["lat"]
     return con
 
 def ensure_schema(con: sqlite3.Connection):
-    """Create the violations table if it doesn't exist."""
+    """Create the violations table if it doesn't exist yet."""
     con.executescript(SCHEMA_SQL)
     con.commit()
 
 def print_rows(rows):
-    """Pretty-print a list of sqlite3.Row as a simple table."""
+    """Pretty-print rows as a simple table."""
     data = [dict(r) for r in rows]
     if not data:
         print("(no rows)")
         return
-    widths = {k: max(len(k), max(len(str(v)) for v in (row.get(k, "") for row in data))) for k in data[0].keys()}
+    widths = {k: max(len(k), max(len(str(d.get(k, ""))) for d in data)) for k in data[0].keys()}
     header = " | ".join(k.ljust(widths[k]) for k in data[0].keys())
     print(header)
     print("-" * len(header))
-    for row in data:
-        print(" | ".join(str(row.get(k, "")).ljust(widths[k]) for k in data[0].keys()))
+    for d in data:
+        print(" | ".join(str(d.get(k, "")).ljust(widths[k]) for k in data[0].keys()))
 
-# ----------- Simple operations: list, add, show -----------
+# ---------- basic operations ----------
 
 def list_all(con):
-    """Return all violations (newest first)."""
+    """List all violations (newest first)."""
     return con.execute(
         "SELECT V_ID, lat, lon, type, time_data FROM violations ORDER BY V_ID DESC"
     ).fetchall()
 
 def add_violation(con, vtype: str, lat, lon, time_data):
-    """
-    Insert a violation row.
-    If lat/lon/time_data are missing (None), they become 0 (your requirement).
-    """
-    # Coerce None/empty to 0 (keep it dead simple; no parsing)
+    """Add one violation. Missing lat/lon/time_data become 0 (or '0')."""
     if lat is None:
         lat = 0
     if lon is None:
         lon = 0
     if not time_data:
         time_data = "0"
-
     con.execute(
         "INSERT INTO violations(lat, lon, type, time_data) VALUES (?, ?, ?, ?)",
         (lat, lon, vtype, time_data)
     )
     con.commit()
-    return [{"status": "OK", "inserted_type": vtype, "lat": lat, "lon": lon, "time_data": time_data}]
+    return con.execute(
+        "SELECT V_ID, lat, lon, type, time_data FROM violations ORDER BY V_ID DESC LIMIT 1"
+    ).fetchall()
 
 def show_one(con, vid: int):
-    """Return one violation by ID."""
+    """Show a single violation by primary key."""
     return con.execute(
         "SELECT V_ID, lat, lon, type, time_data FROM violations WHERE V_ID = ?",
         (vid,)
     ).fetchall()
 
-def main():
-    # Build the tiny CLI
-    parser = argparse.ArgumentParser(description="Simple Jetson violation query tool (coords)")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+# ---------- CLI ----------
 
-    # list
+def main():
+    ap = argparse.ArgumentParser(description="Simple violations DB tool (creates table if missing)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
     p_list = sub.add_parser("list", help="List all violations (newest first)")
     p_list.add_argument("--db", type=pathlib.Path, default=DB_PATH)
 
-    # add
-    p_add = sub.add_parser("add", help="Add a new violation")
-    p_add.add_argument("type", type=str, help="Violation type (e.g., NO_HARD_HAT or NO_VEST)")
-    p_add.add_argument("--lat", type=float, default=None, help="Latitude (optional, default 0)")
-    p_add.add_argument("--lon", type=float, default=None, help="Longitude (optional, default 0)")
-    p_add.add_argument("--time", type=str, default=None, help="Time/Date string (optional, default '0')")
+    p_add = sub.add_parser("add", help="Add a violation row")
+    p_add.add_argument("type", type=str, help="Violation type (e.g., NO_HARD_HAT, NO_VEST)")
+    p_add.add_argument("--lat", type=float, default=None, help="Latitude (optional; default 0)")
+    p_add.add_argument("--lon", type=float, default=None, help="Longitude (optional; default 0)")
+    p_add.add_argument("--time", type=str, default=None, help="Time/Date string (optional; default '0')")
     p_add.add_argument("--db", type=pathlib.Path, default=DB_PATH)
 
-    # show
     p_show = sub.add_parser("show", help="Show one violation by V_ID")
     p_show.add_argument("V_ID", type=int)
     p_show.add_argument("--db", type=pathlib.Path, default=DB_PATH)
 
-    args = parser.parse_args()
+    args = ap.parse_args()
 
-    # Open DB and ensure schema exists
     con = connect(args.db)
-    ensure_schema(con)
+    ensure_schema(con)  # create table on first run; no-op afterwards
 
     try:
-        # If user asked to list all
         if args.cmd == "list":
-            rows = list_all(con)
-            print_rows(rows)
+            print_rows(list_all(con))
             return
-
-        # If user wants to add a violation
         if args.cmd == "add":
-            rows = add_violation(con, args.type, args.lat, args.lon, args.time)
-            print_rows(rows)
+            print_rows(add_violation(con, args.type, args.lat, args.lon, args.time))
             return
-
-        # If user wants to show a single violation by ID
         if args.cmd == "show":
-            rows = show_one(con, args.V_ID)
-            print_rows(rows)
+            print_rows(show_one(con, args.V_ID))
             return
-
-        # Fallback (argparse should prevent reaching here)
-        print("Use --help for commands.")
     finally:
         con.close()
 
