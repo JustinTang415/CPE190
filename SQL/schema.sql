@@ -16,8 +16,7 @@ CREATE TABLE IF NOT EXISTS imu (
 -- CHANGE ME: Add horiz_acc, vert_acc, fix_type, sats, speed if you need them.
 CREATE TABLE IF NOT EXISTS gps (
   ts INTEGER NOT NULL,
-  lat REAL NOT NULL,
-  lon REAL NOT NULL,
+  vert_acc REAL NOT NULL,
   alt REAL               -- nullable
 );
 
